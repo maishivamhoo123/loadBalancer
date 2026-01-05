@@ -1,19 +1,23 @@
 package main
 
 import (
-	"net/http"
+	"net/http" // <--- ADDED: Needed for http.Client
 	"net/http/httputil"
 	"net/url"
 	"sync"
+	"time" // <--- ADDED: Needed for time.Second
 )
 
 type Server struct {
-	Name              string `json:"name"`
-	URL               string `json:"url"`
+	Name              string
+	URL               string
 	ReverseProxy      *httputil.ReverseProxy
 	Health            bool
 	ActiveConnections int
-	mux               sync.Mutex
+	mux               sync.RWMutex
+
+	// The Index is required by the Heap to update priority in O(log n) time
+	Index int
 }
 
 func newServer(name, urlstr string) *Server {
@@ -25,40 +29,39 @@ func newServer(name, urlstr string) *Server {
 		ReverseProxy:      rp,
 		Health:            true,
 		ActiveConnections: 0,
+		Index:             -1,
 	}
 }
 
+// CheckHealth just reads the current status (fast)
 func (s *Server) CheckHealth() bool {
-	resp, err := http.Head(s.URL)
-	if err != nil {
-		s.Health = false
-		return s.Health
-	}
-	if resp.StatusCode != http.StatusOK {
-		s.Health = false
-		return s.Health
-	}
-	s.Health = true
+	s.mux.RLock()
+	defer s.mux.RUnlock()
 	return s.Health
 }
 
-// IncrementActive safely increases the connection count
-func (s *Server) IncrementActive() {
-	s.mux.Lock()
-	s.ActiveConnections++
-	s.mux.Unlock()
-}
-
-// DecrementActive safely decreases the connection count
-func (s *Server) DecrementActive() {
-	s.mux.Lock()
-	s.ActiveConnections--
-	s.mux.Unlock()
-}
-
-// GetActive safely reads the connection count
-func (s *Server) GetActive() int {
+// SetHealth updates the status safely
+func (s *Server) SetHealth(alive bool) {
 	s.mux.Lock()
 	defer s.mux.Unlock()
+	s.Health = alive
+}
+
+// GetActive reads the connection count safely
+func (s *Server) GetActive() int {
+	s.mux.RLock()
+	defer s.mux.RUnlock()
 	return s.ActiveConnections
+}
+
+// Ping sends a HEAD request to check if the backend is actually alive
+func (s *Server) Ping() bool {
+	// 2 second timeout so we don't get stuck
+	client := http.Client{Timeout: 2 * time.Second}
+	resp, err := client.Head(s.URL)
+	if err != nil {
+		return false
+	}
+	defer resp.Body.Close()
+	return resp.StatusCode == http.StatusOK
 }

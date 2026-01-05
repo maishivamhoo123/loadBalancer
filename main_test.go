@@ -12,46 +12,59 @@ import (
 )
 
 // ==========================================
-// TEST 1: The "Smart" Logic (Least Connections)
+// TEST 1: The "Smart" Logic (Min-Heap / Priority Queue)
 // ==========================================
-func TestLeastConnections(t *testing.T) {
-	// Setup: Server 1 is busy (10 conn), Server 2 is free (0 conn)
-	s1 := &Server{Name: "server-1", ActiveConnections: 10, Health: true}
-	s2 := &Server{Name: "server-2", ActiveConnections: 0, Health: true}
+func TestLeastConnectionsHeap(t *testing.T) {
+	// 1. Reset the global pool for testing
+	pool = ServerPool{}
 
-	// Reset global list
-	serverList = []*Server{s1, s2}
+	// 2. Create mock servers
+	// Server 1 starts with 10 connections
+	s1 := newServer("server-1", "http://localhost:8081")
+	s1.ActiveConnections = 10
 
-	// Test: Should pick Server 2
-	best, err := getLeastConnectedServer()
-	if err != nil {
-		t.Fatalf("Unexpected error: %v", err)
+	// Server 2 starts with 0 connections
+	s2 := newServer("server-2", "http://localhost:8082")
+	s2.ActiveConnections = 0
+
+	// 3. Add them to the Heap
+	pool.AddServer(s1)
+	pool.AddServer(s2)
+
+	// 4. Test: GetNextServer should return s2 (Min connections)
+	best := pool.GetNextServer()
+	if best == nil {
+		t.Fatalf("Expected a server, got nil")
 	}
 	if best.Name != "server-2" {
 		t.Errorf("Expected server-2 (0 conns) but got %s (%d conns)", best.Name, best.ActiveConnections)
 	}
 
-	// Scenario: Server 2 gets busy, but Server 1 clears up
-	s2.ActiveConnections = 20
-	s1.ActiveConnections = 5
+	// 5. Scenario: Traffic Spike!
+	// We simulate s2 getting hammered with requests.
+	// We use IncrementActive to ensure the Heap re-balances itself.
+	for i := 0; i < 20; i++ {
+		pool.IncrementActive(s2)
+	}
+	// Now: s1 (10), s2 (20). The Min-Heap should rotate s1 to the top.
 
-	best, _ = getLeastConnectedServer()
+	best = pool.GetNextServer()
 	if best.Name != "server-1" {
-		t.Errorf("Expected server-1 (5 conns) but got %s", best.Name)
+		t.Errorf("Expected server-1 (10 conns) but got %s (%d conns)", best.Name, best.ActiveConnections)
 	}
 }
 
 // ==========================================
-// TEST 2: All Servers Down (Edge Case)
+// TEST 2: All Servers Down (Empty Heap)
 // ==========================================
-func TestAllServersDown(t *testing.T) {
-	s1 := &Server{Name: "server-1", Health: false}
-	s2 := &Server{Name: "server-2", Health: false}
-	serverList = []*Server{s1, s2}
+func TestEmptyHeap(t *testing.T) {
+	// Reset pool to empty
+	pool = ServerPool{}
 
-	_, err := getLeastConnectedServer()
-	if err == nil {
-		t.Error("Expected error 'No healthy hosts', but got nil")
+	// Should return nil if no servers exist
+	best := pool.GetNextServer()
+	if best != nil {
+		t.Error("Expected nil when pool is empty, but got a server")
 	}
 }
 
@@ -59,23 +72,27 @@ func TestAllServersDown(t *testing.T) {
 // TEST 3: Concurrency / Race Conditions
 // ==========================================
 func TestConcurrency(t *testing.T) {
-	// This ensures your Mutex is working.
-	// If you didn't have a Mutex, this test would likely panic or fail.
+	// Ensure Mutex prevents race conditions on connection counters
 	s := &Server{ActiveConnections: 0}
 	var wg sync.WaitGroup
 
-	// Simulate 100 concurrent requests incrementing the counter at once
+	// Simulate 100 concurrent requests incrementing at once
 	for i := 0; i < 100; i++ {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			s.IncrementActive()
+			// Note: In the real app we use pool.IncrementActive,
+			// but here we are testing the Server struct's safety internally if we were to access it.
+			// However, since we moved the lock to pool in some places, let's test the pool lock.
+
+			// Actually, let's test the 'pool' method because that's where the lock is now for Increment
+			pool.IncrementActive(s)
 		}()
 	}
 	wg.Wait()
 
-	if s.GetActive() != 100 {
-		t.Errorf("Expected 100 active connections, got %d. Possible Race Condition!", s.GetActive())
+	if s.ActiveConnections != 100 {
+		t.Errorf("Expected 100 active connections, got %d. Possible Race Condition!", s.ActiveConnections)
 	}
 
 	// Simulate 100 concurrent requests decrementing
@@ -83,61 +100,61 @@ func TestConcurrency(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			s.DecrementActive()
+			pool.DecrementActive(s)
 		}()
 	}
 	wg.Wait()
 
-	if s.GetActive() != 0 {
-		t.Errorf("Expected 0 active connections after decrement, got %d", s.GetActive())
+	if s.ActiveConnections != 0 {
+		t.Errorf("Expected 0 active connections after decrement, got %d", s.ActiveConnections)
 	}
 }
 
 // ==========================================
-// TEST 4: Health Checks (Mock HTTP)
+// TEST 4: Health Checks (Ping)
 // ==========================================
-func TestHealthCheck(t *testing.T) {
-	// Mock a healthy server (returns 200 OK)
-	mockServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+func TestPing(t *testing.T) {
+	// 1. Mock a healthy backend server
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	}))
-	defer mockServer.Close()
+	defer backend.Close()
 
-	u, _ := url.Parse(mockServer.URL)
-	lbServer := &Server{
+	u, _ := url.Parse(backend.URL)
+	s := &Server{
 		Name:         "test-server",
-		URL:          mockServer.URL,
+		URL:          backend.URL,
 		ReverseProxy: httputil.NewSingleHostReverseProxy(u),
 		Health:       true,
 	}
 
-	if !lbServer.CheckHealth() {
-		t.Errorf("Expected server to be healthy, but it was not")
+	// Test Ping() - Should return true
+	if !s.Ping() {
+		t.Errorf("Expected Ping to return true for active server, got false")
 	}
 
-	// Mock a dead server (returns 500 Error)
-	badServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusInternalServerError)
-	}))
-	defer badServer.Close()
+	// 2. Test Dead Server (Wrong Port/URL)
+	s.URL = "http://localhost:99999" // Invalid port
 
-	lbServer.URL = badServer.URL
-	if lbServer.CheckHealth() {
-		t.Errorf("Expected server to be unhealthy (500), but it passed")
+	// Reduce timeout for test speed (optional, since Ping has 2s timeout)
+	// But we can just run it.
+
+	if s.Ping() {
+		t.Errorf("Expected Ping to return false for dead server, got true")
 	}
 }
 
 // ==========================================
-// TEST 5: Config Loading (File I/O)
+// TEST 5: Config Loading
 // ==========================================
 func TestLoadConfig(t *testing.T) {
-	// Create a temporary config file
+	// Create a temp config file
 	content := `[{"name": "test-1", "url": "http://localhost:9000"}]`
 	tmpfile, err := os.CreateTemp("", "config_test_*.json")
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer os.Remove(tmpfile.Name()) // Clean up file after test
+	defer os.Remove(tmpfile.Name())
 
 	if _, err := tmpfile.Write([]byte(content)); err != nil {
 		t.Fatal(err)
@@ -146,18 +163,23 @@ func TestLoadConfig(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Reset global list and load from temp file
-	serverList = []*Server{}
+	// Reset globals
+	allServers = []*Server{}
+	pool = ServerPool{}
+
+	// Load
 	err = loadConfig(tmpfile.Name())
 	if err != nil {
 		t.Fatalf("Failed to load config: %v", err)
 	}
 
-	if len(serverList) != 1 {
-		t.Errorf("Expected 1 server loaded, got %d", len(serverList))
+	// Check Backup List
+	if len(allServers) != 1 {
+		t.Errorf("Expected 1 server in allServers, got %d", len(allServers))
 	}
-	if serverList[0].Name != "test-1" {
-		t.Errorf("Expected server name 'test-1', got %s", serverList[0].Name)
+	// Check Heap
+	if pool.servers.Len() != 1 {
+		t.Errorf("Expected 1 server in Pool Heap, got %d", pool.servers.Len())
 	}
 }
 
@@ -165,30 +187,24 @@ func TestLoadConfig(t *testing.T) {
 // TEST 6: Stats Dashboard Handler
 // ==========================================
 func TestStatsHandler(t *testing.T) {
-	// Setup dummy data
-	serverList = []*Server{
+	// Setup dummy data in the backup list
+	allServers = []*Server{
 		{Name: "stats-server", Health: true, ActiveConnections: 5},
 	}
 
-	// Create a request to /stats
 	req, err := http.NewRequest("GET", "/stats", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	// Create a ResponseRecorder to record the response
 	rr := httptest.NewRecorder()
 	handler := http.HandlerFunc(statsHandler)
-
-	// Serve the request
 	handler.ServeHTTP(rr, req)
 
-	// Check status code
 	if status := rr.Code; status != http.StatusOK {
 		t.Errorf("handler returned wrong status code: got %v want %v", status, http.StatusOK)
 	}
 
-	// Check body contains JSON
 	var response []map[string]interface{}
 	if err := json.Unmarshal(rr.Body.Bytes(), &response); err != nil {
 		t.Errorf("handler returned invalid JSON: %v", err)

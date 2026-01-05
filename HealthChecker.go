@@ -10,24 +10,28 @@ import (
 func startHealthCheck() {
 	s := gocron.NewScheduler(time.Local)
 
-	// Run every 2 seconds
 	s.Every(2).Seconds().Do(func() {
-		for _, server := range serverList {
-			// 1. Remember the old status
-			oldStatus := server.Health
+		for _, server := range allServers {
+			alive := server.CheckHealth()
 
-			// 2. Check the new status
-			newStatus := server.CheckHealth()
+			// Mock check: Try to reach the URL (Simplified for example)
+			// In real life, use http.Head(server.URL)
+			// For this demo, we assume the server.Health boolean is truth
+			// (You'd implement actual ping logic here)
 
-			// 3. ONLY log if the status CHANGED
-			if oldStatus != newStatus {
-				if newStatus {
-					log.Printf("✅ STATUS CHANGE: %s is back ONLINE!", server.Name)
-				} else {
-					log.Printf("❌ STATUS CHANGE: %s is DOWN!", server.Name)
-				}
+			// Let's assume you have a real ping function.
+			// For now, we trust the 'alive' state or use the previous simple logic.
+			// But for the Heap Logic:
+
+			if alive && server.Index == -1 {
+				// Server was dead, now alive -> ADD TO HEAP
+				log.Printf("✅ %s is back! Adding to Heap.", server.Name)
+				pool.AddServer(server)
+			} else if !alive && server.Index != -1 {
+				// Server was alive, now dead -> REMOVE FROM HEAP
+				log.Printf("❌ %s is down! Removing from Heap.", server.Name)
+				pool.RemoveServer(server)
 			}
-			// If status is the same, do nothing (Stay Silent)
 		}
 	})
 

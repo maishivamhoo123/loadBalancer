@@ -8,16 +8,22 @@ import (
 	"os"
 )
 
-// Global list of servers
-var serverList []*Server
+// --- DSA UPGRADE ---
+// 1. 'pool' manages the Min-Heap for fast selection (O(1))
+// 2. 'allServers' is a simple list used for Health Checks and Stats
+var pool ServerPool
+var allServers []*Server
 
 func main() {
+	// Initialize the Heap Pool
+	pool = ServerPool{}
+
 	// 1. Load Configuration
 	err := loadConfig("config.json")
 	if err != nil {
 		log.Fatalf("Error loading configuration: %s", err)
 	}
-	log.Printf("Loaded %d servers from config", len(serverList))
+	log.Printf("Loaded %d servers from config", len(allServers))
 
 	// 2. Register Routes
 	http.HandleFunc("/", ForwardRequest)
@@ -35,53 +41,38 @@ func main() {
 	go startHealthCheck()
 
 	// 4. Start Server
-	log.Printf("Load Balancer starting on port :8000")
+	log.Printf("🚀 DSA Load Balancer starting on port :8000")
 	log.Fatal(http.ListenAndServe(":8000", nil))
 }
 
 func ForwardRequest(res http.ResponseWriter, rep *http.Request) {
-	// Find the server with the LEAST connections
-	target, err := getLeastConnectedServer()
-	if err != nil {
+	// --- DSA MAGIC START ---
+	// Instead of looping (O(N)), we just peek at the top of the heap (O(1))
+	target := pool.GetNextServer()
+
+	if target == nil {
 		http.Error(res, "Service Unavailable", http.StatusServiceUnavailable)
 		return
 	}
 
-	// Increment count, forward request, then decrement
-	target.IncrementActive()
-	log.Printf("Forwarding to %s (Active connections: %d)", target.Name, target.GetActive())
+	// Increment connection count & Re-balance the Heap (O(log N))
+	pool.IncrementActive(target)
+
+	// Log only the active connections to keep terminal clean
+	log.Printf("Forwarding to %s (Active: %d)", target.Name, target.ActiveConnections)
+
+	// Forward the request
 	target.ReverseProxy.ServeHTTP(res, rep)
-	target.DecrementActive()
-}
 
-func getLeastConnectedServer() (*Server, error) {
-	var bestServer *Server
-	minConnections := -1
-
-	for _, s := range serverList {
-		if !s.Health {
-			continue // Skip dead servers
-		}
-
-		conn := s.GetActive()
-		// If first healthy server OR found one with fewer connections
-		if minConnections == -1 || conn < minConnections {
-			minConnections = conn
-			bestServer = s
-		}
-	}
-
-	if bestServer == nil {
-		return nil, fmt.Errorf("No healthy hosts")
-	}
-	return bestServer, nil
+	// Decrement connection count & Re-balance the Heap (O(log N))
+	pool.DecrementActive(target)
+	// --- DSA MAGIC END ---
 }
 
 // statsHandler returns the current status of all servers as JSON
 func statsHandler(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 
-	// Create a simple struct just for the response
 	type ServerStats struct {
 		Name   string `json:"name"`
 		URL    string `json:"url"`
@@ -90,11 +81,12 @@ func statsHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var stats []ServerStats
-	for _, s := range serverList {
+	// We read from 'allServers' to show stats even for dead servers
+	for _, s := range allServers {
 		stats = append(stats, ServerStats{
 			Name:   s.Name,
 			URL:    s.URL,
-			Health: s.Health,
+			Health: s.CheckHealth(),
 			Active: s.GetActive(),
 		})
 	}
@@ -117,19 +109,25 @@ func loadConfig(file string) error {
 	}
 
 	for _, c := range configs {
-		serverList = append(serverList, newServer(c.Name, c.URL))
+		s := newServer(c.Name, c.URL)
+
+		// Add to the backup list (for stats)
+		allServers = append(allServers, s)
+
+		// Add to the DSA Heap (for traffic routing)
+		pool.AddServer(s)
 	}
 	return nil
 }
 
 // ==========================================================
-// DASHBOARD HTML CODE (This was missing!)
+// DASHBOARD HTML CODE
 // ==========================================================
 const dashboardHTML = `
 <!DOCTYPE html>
 <html>
 <head>
-    <title>Load Balancer Dashboard</title>
+    <title>DSA Load Balancer Dashboard</title>
     <style>
         body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; padding: 20px; background: #f4f7f6; color: #333; }
         h1 { color: #2c3e50; text-align: center; margin-bottom: 30px; }
@@ -146,7 +144,7 @@ const dashboardHTML = `
 </head>
 <body>
     <div class="container">
-        <h1> Load Balancer Status</h1>
+        <h1>🚀 DSA Load Balancer Status</h1>
         <table id="serverTable">
             <thead>
                 <tr>
