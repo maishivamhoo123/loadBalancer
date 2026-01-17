@@ -1,22 +1,27 @@
 [
   {
-    "name": "server-1",
-    "url": "http://127.0.0.1:5001"
+    "name": "Power-Server-1",
+    "url": "http://127.0.0.1:5001",
+    "weight": 5
   },
   {
-    "name": "server-2",
-    "url": "http://127.0.0.1:5002"
+    "name": "Medium-Server-2",
+    "url": "http://127.0.0.1:5002",
+    "weight": 3
   },
   {
-    "name": "server-3",
-    "url": "http://127.0.0.1:5003"
+    "name": "Small-Server-3",
+    "url": "http://127.0.0.1:5003",
+    "weight": 1
   },
   {
-    "name": "server-4",
-    "url": "http://127.0.0.1:5004"
+    "name": "Small-Server-4",
+    "url": "http://127.0.0.1:5004",
+    "weight": 1
   },
   {
-    "name": "server-5",
-    "url": "http://127.0.0.1:5005"
+    "name": "Small-Server-5",
+    "url": "http://127.0.0.1:5005",
+    "weight": 1
   }
 ]
